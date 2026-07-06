@@ -1,0 +1,193 @@
+<div class="page">
+  <header class="masthead">
+    <div class="mark">HEMA</div>
+    <div class="masthead-text">
+      <h1>Franchiserecht-monitor</h1>
+      <p>Nieuwe uitspraken over artikel 7:912 BW, op aanvraag</p>
+    </div>
+  </header>
+
+  <div class="controls">
+    <button id="scanBtn" class="scan">Scan nu</button>
+    <span class="scan-note">Doorzoekt de officiële open data van de Rechtspraak van de afgelopen 30 dagen.</span>
+  </div>
+
+  <div id="progress" class="progress" style="display:none;"></div>
+  <div id="banner" class="banner" style="display:none;"></div>
+  <div id="results"></div>
+
+  <footer class="foot">
+    Bron: officiële open data van de Rechtspraak (data.rechtspraak.nl).
+    Deze pagina scant alleen wanneer je op ‘Scan nu’ klikt — er draait niets op de achtergrond.
+  </footer>
+</div>
+
+<script>
+// This page is served from the same Render service that relays to
+// Rechtspraak's official API, so these are same-origin relative paths -
+// no CORS issue, no separate proxy domain needed.
+const INDEX_URL = "/index";
+const CONTENT_URL = "/content";
+const SUBJECT_FILTER = "http://psi.rechtspraak.nl/rechtsgebied#civielRecht_verbintenissenrecht";
+const TARGET_PHRASE = "7:912";
+const LOOKBACK_DAYS = 30;
+const MAX_CANDIDATES = 40;
+
+const $ = (id) => document.getElementById(id);
+
+function isoDaysAgo(days) {
+  return new Date(Date.now() - days * 86400000).toISOString().split(".")[0];
+}
+function esc(s) {
+  return (s || "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+function showProgress(t) { const p = $("progress"); p.style.display = t ? "block" : "none"; p.textContent = t || ""; }
+function showBanner(t) {
+  const b = $("banner");
+  if (!t) { b.style.display = "none"; return; }
+  b.style.display = "block"; b.textContent = t;
+}
+
+async function fetchIndex() {
+  const params = new URLSearchParams({
+    subject: SUBJECT_FILTER, modified: isoDaysAgo(LOOKBACK_DAYS),
+    max: String(MAX_CANDIDATES), sort: "DESC",
+  });
+  const res = await fetch(INDEX_URL + "?" + params);
+  if (!res.ok) throw new Error("Index " + res.status);
+  const doc = new DOMParser().parseFromString(await res.text(), "application/xml");
+  return [...doc.getElementsByTagName("entry")]
+    .map((e) => e.getElementsByTagName("id")[0]?.textContent?.trim())
+    .filter(Boolean);
+}
+async function fetchJudgment(ecli) {
+  const res = await fetch(CONTENT_URL + "?" + new URLSearchParams({ id: ecli }));
+  if (!res.ok) throw new Error("Content " + res.status);
+  return res.text();
+}
+function extractFields(xml) {
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  const grab = (t) => doc.getElementsByTagName(t)[0]?.textContent?.trim() || "";
+  let abstract = grab("dcterms:abstract");
+  if (!abstract) abstract = grab("inhoudsindicatie");
+  return { title: grab("dcterms:title"), date: grab("dcterms:date"), court: grab("dcterms:creator"), abstract };
+}
+
+// Impact analysis is intentionally not wired to a live AI service yet -
+// see the button handler below. Doing so needs an approved AI service and
+// an API key held server-side, which is a CIP/Hidde decision, not
+// something to hardcode into a prototype.
+
+function renderResults(matches) {
+  const wrap = $("results");
+  if (matches.length === 0) {
+    wrap.innerHTML =
+      '<div class="empty">Geen nieuwe uitspraken over 7:912 BW in de afgelopen ' +
+      LOOKBACK_DAYS + " dagen. Kom later terug of verruim de periode.</div>";
+    return;
+  }
+  let html =
+    '<div class="results-head">' + matches.length +
+    (matches.length === 1 ? " uitspraak gevonden" : " uitspraken gevonden") + "</div>";
+  matches.forEach((m, i) => {
+    html +=
+      '<article class="card">' +
+      '<div class="card-ecli">' + esc(m.ecli) + "</div>" +
+      '<h2 class="card-title">' + esc(m.title || "(geen titel)") + "</h2>" +
+      '<dl class="meta"><div><dt>Instantie</dt><dd>' + esc(m.court || "—") + "</dd></div>" +
+      "<div><dt>Datum</dt><dd>" + esc(m.date || "—") + "</dd></div></dl>" +
+      (m.abstract ? '<p class="abstract">' + esc(m.abstract) + "</p>" : "") +
+      '<div class="card-actions">' +
+      '<a class="link" href="' + esc(m.link) + '" target="_blank" rel="noreferrer">Volledige uitspraak</a>' +
+      '<button class="impact-btn" data-i="' + i + '">Impact-analyse (binnenkort)</button>' +
+      "</div>" +
+      '<div class="impact-out" id="impact-' + i + '" style="display:none;"></div>' +
+      "</article>";
+  });
+  wrap.innerHTML = html;
+
+  wrap.querySelectorAll(".impact-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const i = +btn.dataset.i;
+      const out = $("impact-" + i);
+      out.style.display = "block";
+      out.innerHTML =
+        '<div class="impact-label">Impact op franchiserecht</div>' +
+        "<p>De automatische impact-analyse is nog niet beschikbaar. Deze functie wacht op " +
+        "een goedgekeurde AI-dienst (via CIP/Hidde) voordat de analyse automatisch kan worden " +
+        "gegenereerd. Tot die tijd staat hierboven de officiële inhoudsindicatie van de " +
+        "Rechtspraak.</p>";
+      btn.disabled = true;
+      btn.textContent = "Analyse nog niet beschikbaar";
+    });
+  });
+}
+
+$("scanBtn").addEventListener("click", async () => {
+  const btn = $("scanBtn");
+  btn.disabled = true; btn.textContent = "Bezig met scannen…";
+  $("results").innerHTML = ""; showBanner(null);
+  try {
+    showProgress("Zoeken in de ECLI-index (verbintenissenrecht)…");
+    const eclis = await fetchIndex();
+    const found = [];
+    for (let i = 0; i < eclis.length; i++) {
+      showProgress("Uitspraken controleren op 7:912 BW… (" + (i + 1) + "/" + eclis.length + ")");
+      try {
+        const xml = await fetchJudgment(eclis[i]);
+        if (xml.includes(TARGET_PHRASE)) {
+          const f = extractFields(xml);
+          found.push({ ...f, ecli: eclis[i], link: "https://deeplink.rechtspraak.nl/uitspraak?id=" + eclis[i] });
+        }
+      } catch (e) { /* skip single failure */ }
+    }
+    renderResults(found);
+  } catch (e) {
+    showBanner(
+      "De scan kon de gegevens niet ophalen. De meest waarschijnlijke oorzaak: de proxy op " +
+      "Render staat in de gratis versie en valt in slaap na inactiviteit — de eerste scan kan " +
+      "daardoor 50 seconden duren. Wacht even en probeer opnieuw. Blijft het misgaan, controleer " +
+      "dan of de proxy draait via /health. (Technische melding: " + e.message + ")"
+    );
+  } finally {
+    showProgress(""); btn.disabled = false; btn.textContent = "Scan nu";
+  }
+});
+</script>
+
+<style>
+  * { box-sizing: border-box; }
+  .page { max-width: 820px; margin: 0 auto; padding: 0 20px 60px; font-family: "Segoe UI", Roboto, system-ui, sans-serif; color: #1a1a1a; }
+  .masthead { display: flex; align-items: center; gap: 18px; padding: 22px 0 20px; border-bottom: 3px solid #cc0000; margin-bottom: 28px; }
+  .mark { background: #cc0000; color: #fff; font-weight: 800; letter-spacing: 1px; font-size: 22px; padding: 10px 14px; border-radius: 2px; }
+  .masthead-text h1 { margin: 0; font-size: 24px; font-weight: 700; }
+  .masthead-text p { margin: 3px 0 0; color: #555; font-size: 14px; }
+  .controls { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .scan { background: #cc0000; color: #fff; border: none; font-size: 16px; font-weight: 600; padding: 12px 26px; border-radius: 3px; cursor: pointer; transition: background .15s; }
+  .scan:hover:not(:disabled) { background: #a80000; }
+  .scan:disabled { background: #d98a8a; cursor: default; }
+  .scan-note { color: #666; font-size: 13px; max-width: 380px; }
+  .progress { margin-top: 20px; padding: 12px 16px; background: #f6f6f6; border-left: 3px solid #cc0000; font-size: 14px; color: #444; }
+  .banner { margin-top: 20px; padding: 14px 16px; border-left: 4px solid #d32d1f; border-radius: 2px; font-size: 14px; line-height: 1.5; background: #fdeceb; color: #8a1c12; }
+  .empty { margin-top: 28px; padding: 28px; text-align: center; color: #666; background: #fafafa; border: 1px dashed #ccc; border-radius: 4px; font-size: 15px; }
+  .results { margin-top: 28px; }
+  .results-head { font-size: 13px; text-transform: uppercase; letter-spacing: .8px; color: #888; margin: 28px 0 14px; font-weight: 600; }
+  .card { border: 1px solid #e2e2e2; border-radius: 5px; padding: 20px 22px; margin-bottom: 16px; background: #fff; }
+  .card-ecli { font-family: "Consolas", monospace; font-size: 12px; color: #cc0000; font-weight: 600; margin-bottom: 6px; }
+  .card-title { margin: 0 0 14px; font-size: 17px; font-weight: 650; line-height: 1.35; }
+  .meta { display: flex; gap: 40px; margin: 0 0 14px; }
+  .meta dt { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: #999; }
+  .meta dd { margin: 2px 0 0; font-size: 14px; }
+  .abstract { font-size: 14px; line-height: 1.6; color: #333; margin: 0 0 16px; padding: 12px 14px; background: #f8f8f8; border-radius: 3px; }
+  .card-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .link { color: #cc0000; font-size: 14px; font-weight: 600; text-decoration: none; }
+  .link:hover { text-decoration: underline; }
+  .impact-btn { background: #fff; color: #cc0000; border: 1.5px solid #cc0000; font-size: 14px; font-weight: 600; padding: 8px 16px; border-radius: 3px; cursor: pointer; }
+  .impact-btn:hover:not(:disabled) { background: #fff5f5; }
+  .impact-btn:disabled { color: #c99; border-color: #c99; cursor: default; }
+  .impact-out { margin-top: 16px; padding: 16px 18px; background: #fbf6f6; border: 1px solid #f0dede; border-radius: 4px; }
+  .impact-label { font-size: 11px; text-transform: uppercase; letter-spacing: .7px; color: #cc0000; font-weight: 700; margin-bottom: 8px; }
+  .impact-out p { margin: 0 0 10px; font-size: 14px; line-height: 1.6; }
+  .impact-out p:last-child { margin-bottom: 0; }
+  .foot { margin-top: 40px; padding-top: 18px; border-top: 1px solid #eee; font-size: 12px; color: #999; line-height: 1.5; }
+</style>

@@ -25,12 +25,13 @@ migration (HEMA infra, proper hosting) before being anything more than a
 prototype/demo.
 """
 
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, send_from_directory
 from flask_cors import CORS
 import requests
+import os
 
 app = Flask(__name__)
-CORS(app)  # allow the artifact (any origin) to call this
+CORS(app)  # allow the page to call the relay endpoints
 
 # The only two upstream endpoints we relay. Locking this to a fixed
 # allow-list means the proxy can't be abused to fetch arbitrary URLs.
@@ -38,6 +39,12 @@ INDEX_URL = "https://data.rechtspraak.nl/uitspraken/zoeken"
 CONTENT_URL = "https://data.rechtspraak.nl/uitspraken/content"
 
 UPSTREAM_TIMEOUT = 30
+
+
+@app.route("/")
+def home():
+    """Serve the Franchiserecht-monitor web page itself."""
+    return send_from_directory(os.path.dirname(os.path.abspath(__file__)), "index.html")
 
 
 @app.route("/health")
