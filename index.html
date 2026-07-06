@@ -12,7 +12,13 @@
     <span class="scan-note">Doorzoekt de officiële open data van de Rechtspraak van de afgelopen 30 dagen.</span>
   </div>
 
-  <div id="progress" class="progress" style="display:none;"></div>
+  <div id="progress" class="progress" style="display:none;">
+    <div class="progress-head">
+      <span id="progress-label">Bezig met scannen…</span>
+      <span id="progress-count"></span>
+    </div>
+    <div class="progress-track"><div id="progress-fill" class="progress-fill"></div></div>
+  </div>
   <div id="banner" class="banner" style="display:none;"></div>
   <div id="results"></div>
 
@@ -41,7 +47,26 @@ function isoDaysAgo(days) {
 function esc(s) {
   return (s || "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
-function showProgress(t) { const p = $("progress"); p.style.display = t ? "block" : "none"; p.textContent = t || ""; }
+function showProgress(label, current, total) {
+  const p = $("progress");
+  if (!label) { p.style.display = "none"; return; }
+  p.style.display = "block";
+  $("progress-label").textContent = label;
+  const fill = $("progress-fill");
+  const countEl = $("progress-count");
+  if (total && total > 0) {
+    const pct = Math.round((current / total) * 100);
+    fill.style.width = pct + "%";
+    fill.classList.remove("indeterminate");
+    countEl.textContent = current + " / " + total;
+  } else {
+    // No known total yet (e.g. the initial index lookup) - show an
+    // indeterminate sweeping bar instead of a fixed percentage.
+    fill.style.width = "100%";
+    fill.classList.add("indeterminate");
+    countEl.textContent = "";
+  }
+}
 function showBanner(t) {
   const b = $("banner");
   if (!t) { b.style.display = "none"; return; }
@@ -128,11 +153,11 @@ $("scanBtn").addEventListener("click", async () => {
   btn.disabled = true; btn.textContent = "Bezig met scannen…";
   $("results").innerHTML = ""; showBanner(null);
   try {
-    showProgress("Zoeken in de ECLI-index (verbintenissenrecht)…");
+    showProgress("Zoeken in de ECLI-index (verbintenissenrecht)…", 0, 0);
     const eclis = await fetchIndex();
     const found = [];
     for (let i = 0; i < eclis.length; i++) {
-      showProgress("Uitspraken controleren op 7:912 BW… (" + (i + 1) + "/" + eclis.length + ")");
+      showProgress("Uitspraken controleren op 7:912 BW…", i + 1, eclis.length);
       try {
         const xml = await fetchJudgment(eclis[i]);
         if (xml.includes(TARGET_PHRASE)) {
@@ -150,7 +175,7 @@ $("scanBtn").addEventListener("click", async () => {
       "dan of de proxy draait via /health. (Technische melding: " + e.message + ")"
     );
   } finally {
-    showProgress(""); btn.disabled = false; btn.textContent = "Scan nu";
+    showProgress(null); btn.disabled = false; btn.textContent = "Scan nu";
   }
 });
 </script>
@@ -167,7 +192,26 @@ $("scanBtn").addEventListener("click", async () => {
   .scan:hover:not(:disabled) { background: #a80000; }
   .scan:disabled { background: #d98a8a; cursor: default; }
   .scan-note { color: #666; font-size: 13px; max-width: 380px; }
-  .progress { margin-top: 20px; padding: 12px 16px; background: #f6f6f6; border-left: 3px solid #cc0000; font-size: 14px; color: #444; }
+  .progress { margin-top: 20px; }
+  .progress-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+  #progress-label { font-size: 14px; color: #444; font-weight: 500; }
+  #progress-count { font-size: 13px; color: #999; font-variant-numeric: tabular-nums; }
+  .progress-track { height: 8px; background: #eee; border-radius: 20px; overflow: hidden; }
+  .progress-fill {
+    height: 100%; width: 0; background: #cc0000; border-radius: 20px;
+    transition: width .25s ease;
+  }
+  .progress-fill.indeterminate {
+    width: 40% !important; transition: none;
+    animation: sweep 1.1s ease-in-out infinite;
+  }
+  @keyframes sweep {
+    0% { margin-left: -40%; }
+    100% { margin-left: 100%; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .progress-fill.indeterminate { animation: none; margin-left: 0; width: 100% !important; opacity: .6; }
+  }
   .banner { margin-top: 20px; padding: 14px 16px; border-left: 4px solid #d32d1f; border-radius: 2px; font-size: 14px; line-height: 1.5; background: #fdeceb; color: #8a1c12; }
   .empty { margin-top: 28px; padding: 28px; text-align: center; color: #666; background: #fafafa; border: 1px dashed #ccc; border-radius: 4px; font-size: 15px; }
   .results { margin-top: 28px; }
